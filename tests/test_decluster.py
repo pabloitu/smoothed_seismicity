@@ -52,7 +52,7 @@ def test_distant_foreshock_kept_with_default_fs():
     assert res.is_mainshock.tolist() == [True, True]
 
 
-def test_catalog_adds_columns_and_classifies():
+def test_catalog_returns_mainshocks_only():
     df = pd.DataFrame({
         "lon":   [-71.0, -71.05],
         "lat":   [-33.0, -33.0],
@@ -61,9 +61,8 @@ def test_catalog_adds_columns_and_classifies():
         "mag":   [  7.0,   4.5],
     })
     out = decluster_catalog(df)
-    assert {"is_mainshock", "cluster_id"}.issubset(out.columns)
-    assert out["is_mainshock"].tolist() == [True, False]
-    assert "_t" not in out.columns
+    assert list(out.columns) == list(df.columns)
+    assert out["mag"].tolist() == [7.0]
 
 
 def test_catalog_min_mag_filter_skips_event():
@@ -75,8 +74,7 @@ def test_catalog_min_mag_filter_skips_event():
         "mag":   [  7.0,   4.5],
     })
     out = decluster_catalog(df, min_mag=5.0)
-    assert out["is_mainshock"].tolist() == [True, True]
-    assert out.iloc[1]["cluster_id"] == 0
+    assert out["mag"].tolist() == [7.0, 4.5]
 
 
 def test_catalog_missing_column_raises():

@@ -42,7 +42,7 @@ def test_adaptive_radii_fallback_when_n_too_large(events_5):
 def test_adaptive_radii_raises_for_single_event():
     df = pd.DataFrame({"lon": [0.0], "lat": [0.0], "depth": [0.0],
                        "time": ["2010-01-01"], "mag": [5.0]})
-    with pytest.raises(ValueError, match=">=2"):
+    with pytest.raises(ValueError, match=">= 2"):
         adaptive_radii(df, n=1)
 
 

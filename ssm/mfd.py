@@ -71,9 +71,7 @@ def truncated_gr(rates_raw, a, b, mmin, mmax, delta_m):
     lam_global = 10.0 ** (a - b * mmin)
     rates_mmin = (rates_raw / total) * lam_global
 
-    edges = np.arange(mmin, mmax + 1e-6, delta_m)
-    if edges[-1] < mmax - 1e-5:
-        edges = np.append(edges, mmax)
+    edges = np.append(np.arange(mmin, mmax - 1e-6, delta_m), mmax)
     n_bins = len(edges) - 1
 
     rates = np.zeros((rates_raw.size, n_bins), float)
@@ -81,8 +79,13 @@ def truncated_gr(rates_raw, a, b, mmin, mmax, delta_m):
         m_lo = edges[i]
         m_hi = edges[i + 1]
         f_lo = 10.0 ** (b * (mmin - m_lo))
-        f_hi = 0.0 if m_hi >= mmax else 10.0 ** (b * (mmin - m_hi))
-        rates[:, i] = np.maximum(rates_mmin * (f_lo - f_hi), 0.0)
+        f_hi = 10.0 ** (b * (mmin - min(m_hi, mmax)))
+        rates[:, i] = rates_mmin * (f_lo - f_hi)
+
+    total_bins = rates.sum()
+    total_gr = lam_global * (1.0 - 10.0 ** (-b * (mmax - mmin)))
+    if not np.isclose(total_bins, total_gr, rtol=1e-9):
+        raise RuntimeError(f"binned total {total_bins} differs from analytic {total_gr}")
 
     print(f"truncated GR: a={a:.3f}, b={b:.3f}, mmin={mmin}, mmax={mmax}, "
           f"global lambda={lam_global:.3f}/yr, after truncation={rates.sum():.3f}/yr")

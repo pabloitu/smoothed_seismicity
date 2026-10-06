@@ -2,7 +2,7 @@ from pathlib import Path
 
 import numpy as np
 
-from openquake.hazardlib.geo import Point
+from openquake.hazardlib.geo import NodalPlane, Point
 from openquake.hazardlib.mfd import EvenlyDiscretizedMFD
 from openquake.hazardlib.pmf import PMF
 from openquake.hazardlib.source import PointSource
@@ -12,27 +12,27 @@ from openquake.hazardlib.sourcewriter import write_source_model
 
 def build_sources(grid, rates, edges, depths, usd, lsd, *,
                   trt, msr, npd, aspect,
-                  mesh_spacing=5.0, tom=None):
+                  mesh_spacing=5.0, tom=None, hdd=None):
     """
     Build OpenQuake PointSource objects from per-cell rates.
-
-    All depth quantities are arrays of shape `(n_cells,)`. No half-thickness
-    rule is imposed: compute USD/LSD however you want in the run script
-    (e.g. `depth ± thickness(depth)` for intraslab; constants for crustal).
 
     Parameters
     ----------
     grid : DataFrame with 'lon', 'lat'.
     rates : ndarray, shape (n_cells, n_bins).
     edges : ndarray, shape (n_bins + 1,).
-    depths, usd, lsd : array_like, shape (n_cells,)
-        Hypocentral depth and upper/lower seismogenic depth per cell, km.
+    depths : array_like, shape (n_cells,) or None
+        Hypocentral depth per cell, km. Ignored when `hdd` is given.
+    usd, lsd : float or array_like, shape (n_cells,)
+        Upper and lower seismogenic depth, km.
     trt : str
     msr : MSR instance
-    npd : PMF
+    npd : PMF or list of (weight, strike, dip, rake)
     aspect : float
     mesh_spacing : float, default 5.0 km.
     tom : TemporalOccurrenceModel, default PoissonTOM(1.0).
+    hdd : list of (weight, depth), optional
+        Hypocentral depth distribution shared by every source.
 
     Returns
     -------
@@ -43,8 +43,22 @@ def build_sources(grid, rates, edges, depths, usd, lsd, *,
         raise ValueError("rates rows must match grid length")
     if rates.shape[1] != len(edges) - 1:
         raise ValueError("rates cols must match len(edges)-1")
-    if len(depths) != n or len(usd) != n or len(lsd) != n:
-        raise ValueError("depths/usd/lsd lengths must match grid")
+
+    u = np.broadcast_to(np.asarray(usd, float), (n,))
+    L = np.broadcast_to(np.asarray(lsd, float), (n,))
+    if hdd is None:
+        d = np.asarray(depths, float)
+        if d.shape != (n,):
+            raise ValueError("depths length must match grid")
+        hz = None
+    else:
+        w = np.array([x[0] for x in hdd], float)
+        dep = np.array([x[1] for x in hdd], float)
+        pmf = PMF(list(zip((w / w.sum()).tolist(), dep.tolist())))
+        hz = dep
+    if not isinstance(npd, PMF):
+        npd = PMF([(float(w), NodalPlane(float(st), float(dp), float(rk)))
+                   for w, st, dp, rk in npd])
 
     if tom is None:
         tom = PoissonTOM(1.0)
@@ -54,9 +68,6 @@ def build_sources(grid, rates, edges, depths, usd, lsd, *,
 
     lon = grid["lon"].to_numpy(float)
     lat = grid["lat"].to_numpy(float)
-    d = np.asarray(depths, float)
-    u = np.asarray(usd, float)
-    L = np.asarray(lsd, float)
 
     sources = []
     n_zero = 0
@@ -66,9 +77,18 @@ def build_sources(grid, rates, edges, depths, usd, lsd, *,
         if not np.any(row > 0):
             n_zero += 1
             continue
-        if not (np.isfinite(d[i]) and np.isfinite(u[i]) and np.isfinite(L[i])):
-            n_bad += 1
-            continue
+        if hz is None:
+            if not (np.isfinite(d[i]) and np.isfinite(u[i]) and np.isfinite(L[i])):
+                n_bad += 1
+                continue
+            h = PMF([(1.0, float(d[i]))])
+            lo, hi = d[i], d[i]
+        else:
+            h = pmf
+            lo, hi = hz.min(), hz.max()
+        if lo < u[i] or hi > L[i]:
+            raise ValueError(f"hypocentre outside {u[i]}-{L[i]} km in cell {i}")
+        last = int(np.nonzero(row > 0)[0][-1])
         sid = f"ps_{len(sources):06d}"
         src = PointSource(
             source_id=sid,
@@ -76,7 +96,7 @@ def build_sources(grid, rates, edges, depths, usd, lsd, *,
             tectonic_region_type=trt,
             mfd=EvenlyDiscretizedMFD(
                 min_mag=min_mag, bin_width=dM,
-                occurrence_rates=row.tolist(),
+                occurrence_rates=row[:last + 1].tolist(),
             ),
             rupture_mesh_spacing=mesh_spacing,
             magnitude_scaling_relationship=msr,
@@ -86,7 +106,7 @@ def build_sources(grid, rates, edges, depths, usd, lsd, *,
             lower_seismogenic_depth=float(L[i]),
             location=Point(float(lon[i]), float(lat[i])),
             nodal_plane_distribution=npd,
-            hypocenter_distribution=PMF([(1.0, float(d[i]))]),
+            hypocenter_distribution=h,
         )
         sources.append(src)
 
@@ -101,9 +121,9 @@ def check_consistency(rates, sources, *, rtol=1e-10):
     src_sum = np.zeros(n_bins, float)
     for s in sources:
         r = np.asarray(s.mfd.occurrence_rates, float)
-        if r.size != n_bins:
-            raise ValueError(f"source has {r.size} bins, expected {n_bins}")
-        src_sum += r
+        if r.size > n_bins:
+            raise ValueError(f"source has {r.size} bins, expected at most {n_bins}")
+        src_sum[:r.size] += r
     grid_sum = rates.sum(axis=0)
 
     g_tot = float(grid_sum.sum())
